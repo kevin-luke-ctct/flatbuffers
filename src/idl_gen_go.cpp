@@ -1034,6 +1034,7 @@ class GoGenerator : public BaseGenerator {
   }
 
   void GenNativeUnion(const EnumDef &enum_def, std::string *code_ptr) {
+    if (enum_def.generated) return;
     std::string &code = *code_ptr;
     code += "type " + NativeName(enum_def) + " struct {\n";
     code += "\tType " + namer_.Type(enum_def) + "\n";
@@ -1042,6 +1043,7 @@ class GoGenerator : public BaseGenerator {
   }
 
   void GenNativeUnionPack(const EnumDef &enum_def, std::string *code_ptr) {
+    if (enum_def.generated) return;
     std::string &code = *code_ptr;
     code += "func (t *" + NativeName(enum_def) +
             ") Pack(builder *flatbuffers.Builder) flatbuffers.UOffsetT {\n";
@@ -1062,6 +1064,7 @@ class GoGenerator : public BaseGenerator {
   }
 
   void GenNativeUnionUnPack(const EnumDef &enum_def, std::string *code_ptr) {
+    if (enum_def.generated) return;
     std::string &code = *code_ptr;
 
     code += "func (rcv " + namer_.Type(enum_def) +
