@@ -259,6 +259,28 @@ class GoGenerator : public BaseGenerator {
     code += "}\n\n";
   }
 
+  void EnumUnmarshaller(const EnumDef &enum_def, std::string *code_ptr) {
+    std::string &code = *code_ptr;
+    const std::string enum_type = namer_.Type(enum_def);
+    code += "func (v *" + enum_type + ") UnmarshalJSON(data []byte) error {\n";
+    code += "\tvar strData string\n";
+    code += "\tif err := json.Unmarshal(data, &strData); err != nil {\n";
+    code += "\t\treturn err\n";
+    code += "\t}\n";
+    code += "\tif enumValue, ok :=  EnumValues" + enum_type + "[strData]; ok {\n";
+    code += "\t\t *v = enumValue\n";
+    code += "\t}\n";
+    code += "\treturn nil\n";
+    code += "}\n\n";
+    code += "func (v " + enum_type + ") MarshalJSON() ([]byte, error) {\n";
+    code += "\tname, ok := EnumNames"+ enum_type + "[v]\n";
+    code += "\tif ok {\n";
+    code += "\t\treturn []byte(\"\\\"\" + name + \"\\\"\"), nil\n";
+    code += "\t}\n";
+    code += "\treturn []byte(\"null\"), nil\n";
+    code += "}\n\n";
+  }
+
   // Begin enum value map.
   void BeginEnumValues(const EnumDef &enum_def, std::string *code_ptr) {
     std::string &code = *code_ptr;
@@ -1323,6 +1345,7 @@ class GoGenerator : public BaseGenerator {
     EndEnumValues(code_ptr);
 
     EnumStringer(enum_def, code_ptr);
+    EnumUnmarshaller(enum_def, code_ptr);
   }
 
   // Returns the function name that is able to read a value of the given type.
@@ -1471,15 +1494,20 @@ class GoGenerator : public BaseGenerator {
     code += "package " + name_space_name + "\n\n";
     if (needs_imports) {
       code += "import (\n";
+      // standard imports, in alphabetical order for go fmt
       if (needs_bytes_import_) code += "\t\"bytes\"\n";
-      // math is needed to support non-finite scalar default values.
-      if (needs_math_import_) { code += "\t\"math\"\n"; }
-      if (is_enum) { code += "\t\"strconv\"\n"; }
       if (!parser_.opts.go_import.empty()) {
         code += "\tflatbuffers \"" + parser_.opts.go_import + "\"\n";
       } else {
         code += "\tflatbuffers \"github.com/google/flatbuffers/go\"\n";
       }
+      // math is needed to support non-finite scalar default values.
+      if (needs_math_import_) { code += "\t\"math\"\n"; }
+      if (is_enum) {
+        code += "\t\"strconv\"\n";
+        code += "\t\"encoding/json\"\n";
+      }
+
       if (tracked_imported_namespaces_.size() > 0) {
         code += "\n";
         for (auto it = tracked_imported_namespaces_.begin();
@@ -1495,7 +1523,12 @@ class GoGenerator : public BaseGenerator {
       }
       code += ")\n\n";
     } else {
-      if (is_enum) { code += "import \"strconv\"\n\n"; }
+      if (is_enum) {
+        code += "import (\n";
+        code += "\t\"strconv\"\n";
+        code += "\t\"encoding/json\"\n";
+        code += ")\n";
+      }
       if (needs_math_import_) {
         // math is needed to support non-finite scalar default values.
         code += "import \"math\"\n\n";
