@@ -14,6 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+function finish {
+  # Re-enable go modules when done tests
+  go env -w  GO111MODULE=on
+}
+trap finish EXIT
+
 pushd "$(dirname $0)" >/dev/null
 test_dir="$(pwd)"
 go_path=${test_dir}/go_gen
@@ -24,6 +30,10 @@ go_src=${go_path}/src
 ../flatc -g --gen-object-api -I include_test/sub -o ${go_src} include_test/order.fbs
 ../flatc -g --gen-object-api -o ${go_src}/Pizza include_test/sub/no_namespace.fbs
 
+../flatc --jsonschema -I include_test -o ${go_src} monster_test.fbs
+# ../flatc --jsonschema -I include_test/sub -o ${go_src} include_test/order.fbs
+# ../flatc --jsonschema -o ${go_src}/Pizza include_test/sub/no_namespace.fbs
+
 # Go requires a particular layout of files in order to link multiple packages.
 # Copy flatbuffer Go files to their own package directories to compile the
 # test binary:
@@ -32,6 +42,7 @@ mkdir -p ${go_src}/flatbuffers_test
 
 cp -a ../go/* ./go_gen/src/github.com/google/flatbuffers/go
 cp -a ./go_test.go ./go_gen/src/flatbuffers_test/
+GOPATH=${go_path} go install github.com/xeipuuv/gojsonschema/...@latest
 
 # https://stackoverflow.com/a/63545857/7024978
 # We need to turn off go modules for this script
@@ -70,8 +81,5 @@ if [[ ${NOT_FMT_FILES} != "" ]]; then
     echo
     echo "${NOT_FMT_FILES}"
     # enable this when enums are properly formated
-    # exit 1
+    #  exit 1
 fi
-
-# Re-enable go modules when done tests
-go env -w  GO111MODULE=on

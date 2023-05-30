@@ -17,12 +17,12 @@
 package main
 
 import (
-	order "order"
-	pizza "Pizza"
 	mygame "MyGame"          // refers to generated code
 	example "MyGame/Example" // refers to generated code
+	pizza "Pizza"
 	"encoding/json"
 	optional_scalars "optional_scalars" // refers to generated code
+	order "order"
 
 	"bytes"
 	"flag"
@@ -34,6 +34,7 @@ import (
 	"testing/quick"
 
 	flatbuffers "github.com/google/flatbuffers/go"
+	"github.com/xeipuuv/gojsonschema"
 )
 
 var (
@@ -74,8 +75,15 @@ func TestMain(m *testing.M) {
 // TestTextParsing test if text parsing works with object API.
 func TestTextParsing(t *testing.T) {
 	expectedMonster := example.MonsterT{
-		Mana:                  42,
-		Name:                  "foo",
+		Mana: 42,
+		Name: "foo",
+		Test: &example.AnyT{
+			Type: example.AnyMonster,
+			Value: &example.MonsterT{
+				Mana: 43,
+				Name: "foo2",
+			},
+		},
 		LongEnumNormalDefault: example.LongEnumLongTwo,
 	}
 
@@ -97,6 +105,113 @@ func TestTextParsing(t *testing.T) {
 	}
 	if monster.LongEnumNormalDefault != expectedMonster.LongEnumNormalDefault {
 		t.Fatal("wrong enum:", monster.LongEnumNormalDefault)
+	}
+
+	if monster.Test.Value.(*example.MonsterT).Mana != expectedMonster.Test.Value.(*example.MonsterT).Mana {
+		t.Fatal("wrong Test.Value.mana:", monster.Test.Value.(*example.MonsterT).Mana)
+	}
+
+	if monster.Test.Value.(*example.MonsterT).Name != expectedMonster.Test.Value.(*example.MonsterT).Name {
+		t.Fatal("wrong Test.Value.name:", monster.Test.Value.(*example.MonsterT).Name)
+	}
+
+	expectedMonster = example.MonsterT{
+		Mana: 42,
+		Name: "foo",
+		Test: &example.AnyT{
+			Type: example.AnyTestSimpleTableWithEnum,
+			Value: &example.TestSimpleTableWithEnumT{
+				Color: example.ColorBlue,
+			},
+		},
+		LongEnumNormalDefault: example.LongEnumLongTwo,
+	}
+
+	buf = new(bytes.Buffer)
+	if err := json.NewEncoder(buf).Encode(expectedMonster); err != nil {
+		t.Fatal(err)
+	}
+
+	monster = example.MonsterT{}
+	if err := json.NewDecoder(buf).Decode(&monster); err != nil {
+		t.Fatal(err)
+	}
+
+	if monster.Test.Type != expectedMonster.Test.Type {
+		t.Fatal("wrong Test.Type:", monster.Test.Type)
+	}
+
+	if monster.Test.Value.(*example.TestSimpleTableWithEnumT).Color != expectedMonster.Test.Value.(*example.TestSimpleTableWithEnumT).Color {
+		t.Fatal("wrong Test.Type:", monster.Test.Value.(*example.TestSimpleTableWithEnumT).Color)
+	}
+}
+
+func TestTextParsingValidateAgainstJsonSchema(t *testing.T) {
+	expectedMonster := example.MonsterT{
+		Pos:                    &example.Vec3T{X: 0.1, Y: 0.2, Z: 0.3, Test1: 0.4, Test2: example.ColorRed, Test3: &example.TestT{}},
+		Mana:                   42,
+		Hp:                     10,
+		Name:                   "foo",
+		Color:                  example.ColorBlue,
+		LongEnumNormalDefault:  example.LongEnumLongTwo,
+		LongEnumNonEnumDefault: example.LongEnumLongTwo,
+		Flex:                   []byte{1, 2, 3},
+		VectorOfLongs: []int64{
+			1,
+			2,
+			3,
+		},
+		VectorOfDoubles: []float64{
+			0.1,
+			0.2,
+			0.3,
+		},
+		Test5: []*example.TestT{
+			&example.TestT{
+				A: 1,
+				B: 2,
+			},
+			&example.TestT{
+				A: 3,
+				B: 4,
+			},
+		},
+	}
+
+	buf := new(bytes.Buffer)
+	if err := json.NewEncoder(buf).Encode(expectedMonster); err != nil {
+		t.Fatal(err)
+	}
+
+	var monster example.MonsterT
+	if err := json.NewDecoder(bytes.NewBuffer(buf.Bytes())).Decode(&monster); err != nil {
+		t.Fatal(err)
+	}
+
+	buf2 := new(bytes.Buffer)
+	if err := json.NewEncoder(buf2).Encode(monster); err != nil {
+		t.Fatal(err)
+	}
+
+	if string(buf.Bytes()) != string(buf2.Bytes()) {
+		fmt.Printf("Expected: %s\nActual: %s\n", string(buf.Bytes()), string(buf2.Bytes()))
+		t.Fatal("Monster did not encode and decode correctly")
+	}
+
+	// Check that serialized json is consistent with a generated schema
+	monsterSchemaLoader := gojsonschema.NewReferenceLoader("file:///home/kluke/Source/flatbuffers/tests/go_gen/src/monster_test.schema.json")
+	monsterJsonLoader := gojsonschema.NewBytesLoader(buf.Bytes())
+
+	result, err := gojsonschema.Validate(monsterSchemaLoader, monsterJsonLoader)
+	if err != nil {
+		t.Fatal("failed to validate monster json", err)
+	}
+
+	if !result.Valid() {
+		for _, desc := range result.Errors() {
+			fmt.Printf("- %s\n", desc)
+		}
+		t.Fatal("failed to validate monster json, json invalid")
 	}
 }
 

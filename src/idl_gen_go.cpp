@@ -106,6 +106,8 @@ class GoGenerator : public BaseGenerator {
       tracked_imported_namespaces_.clear();
       needs_math_import_ = false;
       needs_bytes_import_ = false;
+      needs_jsonencoding_import_ = false;
+      needs_strconv_import_ = false;
       needs_imports = false;
       std::string enumcode;
       GenEnum(**it, &enumcode);
@@ -127,6 +129,8 @@ class GoGenerator : public BaseGenerator {
       tracked_imported_namespaces_.clear();
       needs_math_import_ = false;
       needs_bytes_import_ = false;
+      needs_jsonencoding_import_ = false;
+      needs_strconv_import_ = false;
       std::string declcode;
       GenStruct(**it, &declcode);
       if (parser_.opts.one_file) {
@@ -162,7 +166,8 @@ class GoGenerator : public BaseGenerator {
   std::set<const Definition *, NamespacePtrLess> tracked_imported_namespaces_;
   bool needs_math_import_ = false;
   bool needs_bytes_import_ = false;
-
+  bool needs_jsonencoding_import_ = false;
+  bool needs_strconv_import_ = false;
   // Most field accessors need to retrieve and test the field offset first,
   // this is the prefix code for that.
   std::string OffsetPrefix(const FieldDef &field) {
@@ -260,6 +265,7 @@ class GoGenerator : public BaseGenerator {
   }
 
   void EnumUnmarshaller(const EnumDef &enum_def, std::string *code_ptr) {
+    needs_jsonencoding_import_ = true;
     std::string &code = *code_ptr;
     const std::string enum_type = namer_.Type(enum_def);
     code += "func (v *" + enum_type + ") UnmarshalJSON(data []byte) error {\n";
@@ -975,6 +981,170 @@ class GoGenerator : public BaseGenerator {
     code += "}\n\n";
   }
 
+  void GenNativeStructJsonMarshlers(const StructDef &struct_def, std::string *code_ptr) {
+    // Check if we actually need to do this.
+    std::string &code = *code_ptr;
+    bool requires_json_marshlers = false;
+    for (auto it = struct_def.fields.vec.begin();
+         it != struct_def.fields.vec.end(); ++it) {
+      const FieldDef &field = **it;
+      if (field.deprecated) continue;
+      if (!IsScalar(field.value.type.base_type) &&
+          field.value.type.enum_def != nullptr &&
+          field.value.type.enum_def->is_union) {
+        requires_json_marshlers = true;
+        break; 
+      }
+    }
+    if (!requires_json_marshlers) return;
+    needs_jsonencoding_import_ = true;
+    needs_bytes_import_ = true;
+    code += "func (v *" + NativeName(struct_def) + ") UnmarshalJSON(data []byte) error {\n";
+    code += "\tvar nativeType " + NativeName(struct_def) + "\n";
+    code += "\tvar unpackedJson map[string]json.RawMessage\n";
+    code += "\tif err := json.Unmarshal(data, &unpackedJson); err != nil {\n";
+    code += "\t\treturn err\n";
+    code  += "\t}\n"; 
+
+    // Create Unmarshal step for all fields
+    for (auto it = struct_def.fields.vec.begin();
+         it != struct_def.fields.vec.end(); ++it) {
+      const FieldDef &field = **it;
+      if (field.deprecated) continue;
+      // Skip scalar unions, not supported by golang
+      if (IsScalar(field.value.type.base_type) &&
+          field.value.type.enum_def != nullptr &&
+          field.value.type.enum_def->is_union)
+        continue;
+      bool is_union = field.value.type.enum_def != nullptr && field.value.type.enum_def->is_union;
+      if (is_union) {
+        // Will be split into two (value and type)
+        code += "\tif _, ok := unpackedJson[\"" + field.name + "\"]; ok {\n";
+        code += "\t\tnativeType." + namer_.Field(field) + " = &" + NativeType(field.value.type).substr(1) + "{}\n";
+        code += "\t\tif err := json.Unmarshal(unpackedJson[\"" + field.name + "_type\"], &nativeType." + namer_.Field(field) + ".Type); err != nil {\n";
+        code += "\t\t\treturn err\n";
+        code += "\t\t}\n";
+        // Like a UnionPacker
+        //
+        code += "\t\tswitch nativeType." + namer_.Field(field) + ".Type {\n";
+        for (auto it2 = field.value.type.enum_def->Vals().begin(); it2 != field.value.type.enum_def->Vals().end();
+             ++it2) {
+          const EnumVal &ev = **it2;
+          if (ev.IsZero()) continue;
+          code += "\t\tcase " + namer_.EnumVariant(*field.value.type.enum_def, ev) + ":\n";
+          if (ev.union_type.struct_def) {
+            code += "\t\t\tnativeType." + namer_.Field(field) + ".Value = &" + WrapInNameSpaceAndTrack(ev.union_type.struct_def, NativeName(*ev.union_type.struct_def)) + "{}\n";
+          }
+
+          if (ev.union_type.enum_def) {
+            code += "\t\t\tnativeType." + namer_.Field(field) + ".Value = &" + WrapInNameSpaceAndTrack(ev.union_type.enum_def, NativeName(*ev.union_type.enum_def)) + "{}\n";
+          }
+        }
+        code += "\t\t}\n";
+        code += "\t\tif err := json.Unmarshal(unpackedJson[\"" + field.name + "\"], nativeType." + namer_.Field(field) + ".Value); err != nil {\n";
+        code += "\t\t\treturn err\n";
+        // code += "\t\t\treturn err\n";
+        code += "\t\t}\n";
+        code += "\t}\n";
+
+      } else {
+          if (IsVector(field.value.type)) {
+            code += "\tnativeType." + namer_.Field(field) + " = " + NativeBaseType(field)  + "{}\n";
+          }
+          code += "\tif _, ok := unpackedJson[\"" + field.name + "\"]; ok {\n";
+          if (IsPointerOrInterface(field)) {
+            code += "\t\tnativeType." + namer_.Field(field) + " = &" + NativeBaseType(field)  + "{}\n";
+          }
+          code += "\t\tif err := json.Unmarshal(unpackedJson[\"" + field.name + "\"], "+ NativeReferenceOperator(field) + "nativeType." + namer_.Field(field) + "); err != nil {\n";
+          code += "\t\t\treturn err\n";
+          code += "\t\t}\n";
+          code += "\t}\n";
+      }
+    }
+    code += "\t*v = nativeType\n";
+    code += "\treturn nil\n";
+    code += "}\n\n";
+    code += "func (v " + NativeName(struct_def) + ") MarshalJSON() ([]byte, error) {\n";
+    code += "\tvar err error\n";
+    code += "\tvar b []byte\n";
+    code += "\tvar bytesToJoin [][]byte = [][]byte{}\n";
+    // Create Unmarshal step for all fields
+    for (auto it = struct_def.fields.vec.begin();
+         it != struct_def.fields.vec.end(); ++it) {
+      const FieldDef &field = **it;
+      if (field.deprecated) continue;
+
+      // Skip scalar unions, not supported by golang
+      if (IsScalar(field.value.type.base_type) &&
+          field.value.type.enum_def != nullptr &&
+          field.value.type.enum_def->is_union)
+        continue;
+      bool is_union = field.value.type.enum_def != nullptr && field.value.type.enum_def->is_union;
+      if (IsPointerOrInterface(field)) {
+        code += "\tif v." + namer_.Field(field) + "!= nil {\n";
+      } else {
+        code += "\t{\n";
+      }
+
+      code += "\t\tbuf := bytes.Buffer{}\n";
+      if (is_union) {
+        code += "\t\tif b, err = json.Marshal(v." + namer_.Field(field) + ".Type); err != nil {\n";
+        code += "\t\t\treturn nil, err\n";
+        code += "\t\t}\n";
+        code += "\t\tbuf.Write([]byte(\"\\\"" + field.name + "_type\\\":\"))\n";
+        code += "\t\tbuf.Write(b)\n";
+        code += "\t\tbuf.Write([]byte(\",\"))\n";
+
+        code += "\t\tif b, err = json.Marshal(v." + namer_.Field(field) + ".Value); err != nil {\n";
+        code += "\t\t\treturn nil, err\n";
+        code += "\t\t}\n";
+        code += "\t\tbuf.Write([]byte(\"\\\"" + field.name + "\\\":\"))\n";
+        code += "\t\tbuf.Write(b)\n";
+      } else {
+        // null value in vector type is inconsistent with the json schema flatc produces
+        if (IsVector(field.value.type) &&
+            field.value.type.element == BASE_TYPE_UCHAR &&
+            field.value.type.enum_def == nullptr) {
+          needs_strconv_import_ = true;
+          code += "\t\tif v." + namer_.Field(field) + " == nil {\n";
+          code += "\t\t\tb = []byte(\"[]\")\n";
+          code += "\t\t} else {\n";
+          code += "\t\t\tb = []byte(\"[\")\n";
+          code += "\t\t\tfor i, _v := range v." + namer_.Field(field) + " {\n";
+          code += "\t\t\t\tb = append(b, []byte(strconv.Itoa(int(_v)))...)\n";
+          code += "\t\t\t\tif i < len(v." + namer_.Field(field) + ") - 1{\n";
+          code += "\t\t\t\t\tb = append(b, []byte(\",\")...)\n";
+          code += "\t\t\t\t}\n";
+          code += "\t\t\t}\n";
+          code += "\t\t\tb = append(b, []byte(\"]\")...)\n";
+          code += "\t\t}\n";
+        } else {
+          code += "\t\tif b, err = json.Marshal(v." + namer_.Field(field) + "); err != nil {\n";
+          code += "\t\t\treturn nil, err\n";
+          code += "\t\t}\n";
+          if (IsVector(field.value.type)) {
+            code += "\t\tif v." + namer_.Field(field) + " == nil {\n";
+            code += "\t\t\tb = []byte(\"[]\")\n";
+            code += "\t\t}\n";
+          }
+        }
+        code += "\t\tbuf.Write([]byte(\"\\\"" + field.name + "\\\":\"))\n";
+        code += "\t\tbuf.Write(b)\n";
+      }
+      code += "\t\tbytesToJoin = append(bytesToJoin, buf.Bytes())\n";
+
+      if (IsPointerOrInterface(field)) {
+        code += "\t}\n";
+      } else {
+        code += "\t}\n";
+      }
+    }
+
+	  code += "\tallData,err := append([]byte(\"{\"), append(bytes.Join(bytesToJoin, []byte(\",\")), byte('}'))...), nil\n";
+    code += "\treturn allData,err\n";
+    code += "}\n\n";
+  }
+
   void GenNativeStruct(const StructDef &struct_def, std::string *code_ptr) {
     std::string &code = *code_ptr;
 
@@ -1001,6 +1171,7 @@ class GoGenerator : public BaseGenerator {
       GenNativeStructPack(struct_def, code_ptr);
       GenNativeStructUnPack(struct_def, code_ptr);
     }
+    GenNativeStructJsonMarshlers(struct_def, code_ptr);
   }
 
   void GenNativeUnion(const EnumDef &enum_def, std::string *code_ptr) {
@@ -1457,6 +1628,26 @@ class GoGenerator : public BaseGenerator {
     return namer_.ObjectType(enum_def);
   }
 
+  std::string NativeBaseType(const FieldDef &field) {
+    const Type& type = field.value.type;
+    if (IsScalar(type.base_type)) {
+      if (type.enum_def == nullptr) {
+        return GenTypeBasic(type);
+      } else {
+        return GetEnumTypeName(*type.enum_def);
+      }
+    } else if (IsString(type)) {
+      return "string";
+    } else if (IsVector(type)) {
+      return "[]" + NativeType(type.VectorType());
+    } else if (type.base_type == BASE_TYPE_STRUCT) {
+      return WrapInNameSpaceAndTrack(type.struct_def, NativeName(*type.struct_def));
+    } else if (type.base_type == BASE_TYPE_UNION) {
+      return WrapInNameSpaceAndTrack(type.enum_def, NativeName(*type.enum_def));
+    }
+    FLATBUFFERS_ASSERT(0);
+    return std::string();
+  }
   std::string NativeType(const Type &type) {
     if (IsScalar(type.base_type)) {
       if (type.enum_def == nullptr) {
@@ -1477,6 +1668,35 @@ class GoGenerator : public BaseGenerator {
     }
     FLATBUFFERS_ASSERT(0);
     return std::string();
+  }
+
+  bool IsPointerOrInterface(const FieldDef &field) {
+    if (field.IsScalarOptional()) {
+      return true;
+    } else if (IsString(field.value.type)) {
+      return false;
+    } else if (IsVector(field.value.type)) {
+      return false;
+    } else if (field.value.type.base_type == BASE_TYPE_STRUCT) {
+      return field.IsOptional();
+    } else if (field.value.type.base_type == BASE_TYPE_UNION) {
+      return field.IsOptional();
+    }
+    return false;
+  }
+
+  std::string NativeReferenceOperator(const FieldDef &field) {
+    if (!IsPointerOrInterface(field)) {
+      return "&";
+    }
+    return "";
+  }
+
+  std::string NativeDereferenceOperator(const FieldDef &field) {
+    if (!IsPointerOrInterface(field)) {
+      return "*";
+    }
+    return "";
   }
 
   // Create a struct with a builder and the struct's arguments.
@@ -1506,8 +1726,11 @@ class GoGenerator : public BaseGenerator {
       }
       // math is needed to support non-finite scalar default values.
       if (needs_math_import_) { code += "\t\"math\"\n"; }
-      if (is_enum) {
+      if (is_enum || needs_strconv_import_) {
         code += "\t\"strconv\"\n";
+      }
+
+      if (needs_jsonencoding_import_) {
         code += "\t\"encoding/json\"\n";
       }
 
@@ -1526,15 +1749,26 @@ class GoGenerator : public BaseGenerator {
       }
       code += ")\n\n";
     } else {
-      if (is_enum) {
+      if (is_enum || needs_math_import_ || needs_strconv_import_)
+      {
         code += "import (\n";
-        code += "\t\"strconv\"\n";
-        code += "\t\"encoding/json\"\n";
-        code += ")\n";
       }
+
+      if (is_enum || needs_strconv_import_) {
+        code += "\t\"strconv\"\n";
+      }
+
+      if (is_enum) {
+        code += "\t\"encoding/json\"\n";
+      }
+
       if (needs_math_import_) {
         // math is needed to support non-finite scalar default values.
-        code += "import \"math\"\n\n";
+        code += "\t\"math\"\n";
+      }
+
+      if (is_enum || needs_math_import_ || needs_strconv_import_) {
+        code += ")\n";
       }
     }
   }
