@@ -199,7 +199,7 @@ func TestTextParsingValidateAgainstJsonSchema(t *testing.T) {
 	}
 
 	// Check that serialized json is consistent with a generated schema
-	monsterSchemaLoader := gojsonschema.NewReferenceLoader("file:///home/kluke/Source/flatbuffers/tests/go_gen/src/monster_test.schema.json")
+	monsterSchemaLoader := gojsonschema.NewReferenceLoader("file://../monster_test.schema.json")
 	monsterJsonLoader := gojsonschema.NewBytesLoader(buf.Bytes())
 
 	result, err := gojsonschema.Validate(monsterSchemaLoader, monsterJsonLoader)

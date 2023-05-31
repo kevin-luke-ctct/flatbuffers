@@ -19,6 +19,7 @@ function finish {
   go env -w  GO111MODULE=on
 }
 trap finish EXIT
+export GOFLAGS=-modcacherw
 
 pushd "$(dirname $0)" >/dev/null
 test_dir="$(pwd)"
@@ -38,11 +39,17 @@ go_src=${go_path}/src
 # Copy flatbuffer Go files to their own package directories to compile the
 # test binary:
 mkdir -p ${go_src}/github.com/google/flatbuffers/go
+mkdir -p ${go_src}/github.com/xeipuuv
 mkdir -p ${go_src}/flatbuffers_test
 
 cp -a ../go/* ./go_gen/src/github.com/google/flatbuffers/go
 cp -a ./go_test.go ./go_gen/src/flatbuffers_test/
 GOPATH=${go_path} go install github.com/xeipuuv/gojsonschema/...@latest
+cp -n -a ./go_gen/pkg/mod/github.com/xeipuuv/* ./go_gen/src/github.com/xeipuuv
+for f in ./go_gen/src/github.com/xeipuuv/*
+do
+  mv -n "$f" "${f%%@*}"
+done
 
 # https://stackoverflow.com/a/63545857/7024978
 # We need to turn off go modules for this script
